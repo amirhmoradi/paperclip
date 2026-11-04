@@ -30,6 +30,22 @@ const ACTIVITY_ACTION_TO_PLUGIN_EVENT: Readonly<Record<string, PluginEventType>>
   budget_soft_threshold_crossed: "budget.incident.opened",
   budget_hard_threshold_crossed: "budget.incident.opened",
   budget_incident_resolved: "budget.incident.resolved",
+  issue_thread_interaction_created: "issue.interaction.created",
+  issue_thread_interaction_accepted: "issue.interaction.resolved",
+  issue_thread_interaction_rejected: "issue.interaction.resolved",
+  issue_thread_interaction_answered: "issue.interaction.resolved",
+  issue_thread_interaction_cancelled: "issue.interaction.resolved",
+  issue_thread_interaction_expired: "issue.interaction.resolved",
+  issue_thread_interaction_withdrawn: "issue.interaction.resolved",
+  issue_thread_interaction_dismissed: "issue.interaction.resolved",
+  issue_thread_interaction_skipped: "issue.interaction.resolved",
+  issue_thread_interaction_resolved: "issue.interaction.resolved",
+  // `issue_thread_interaction_updated` (a tool-action execution status tick,
+  // not the card's own resolution) and `issue_thread_interaction_item_verdicts_submitted`
+  // (fires on partial submissions too, before the interaction is actually
+  // resolved) are deliberately left unmapped: declaring either as
+  // `issue.interaction.resolved` would tell a subscriber the card is settled
+  // while it may still be open. See the PR description for a follow-up note.
 };
 
 let _pluginEventBus: PluginEventBus | null = null;
@@ -42,7 +58,14 @@ export function setPluginEventBus(bus: PluginEventBus): void {
   _pluginEventBus = bus;
 }
 
-function eventTypeForActivityAction(action: string): PluginEventType | null {
+/**
+ * Resolve the plugin event type for a logged activity action.
+ *
+ * Exported for direct testing: this mapping is the contract plugins subscribe
+ * against, and a gap here fails silently (the action is simply never forwarded,
+ * with no error on either side).
+ */
+export function eventTypeForActivityAction(action: string): PluginEventType | null {
   if (PLUGIN_EVENT_SET.has(action)) return action as PluginEventType;
   return ACTIVITY_ACTION_TO_PLUGIN_EVENT[action.replaceAll(".", "_")] ?? null;
 }
@@ -158,6 +181,25 @@ export function publishActivity(publication: ActivityPublication) {
     payload: publication.payload,
   });
   if (publication.pluginEvent) publishPluginDomainEvent(publication.pluginEvent);
+  // `activity.logged` is declared in PLUGIN_EVENT_TYPES as the catch-all for
+  // every activity, but until now it was only ever published through
+  // `publishLiveEvent` above (the UI's live feed, a separate channel from the
+  // plugin bus) — a plugin subscribed to it through `ctx.events.on` received
+  // nothing. Publish it here too, for every activity whose specific mapped
+  // event (if any) isn't already `activity.logged` itself.
+  if (publication.pluginEvent?.eventType !== "activity.logged") {
+    publishPluginDomainEvent({
+      eventId: randomUUID(),
+      eventType: "activity.logged",
+      occurredAt: new Date().toISOString(),
+      actorId: publication.payload.actorId as string | undefined,
+      actorType: publication.payload.actorType as PluginEvent["actorType"],
+      entityId: publication.payload.entityId as string | undefined,
+      entityType: publication.payload.entityType as string | undefined,
+      companyId: publication.companyId,
+      payload: publication.payload,
+    });
+  }
   } catch (error) {
     finish(true);
     throw error;
@@ -212,6 +254,9 @@ export async function persistActivity(db: Db, input: LogActivityInput) {
         entityType: input.entityType,
         companyId: input.companyId,
         payload: {
+          // A plugin reads `event.payload`, not the envelope, so `issueId`
+          // needs to be here too — not only on the live-feed `payload` above.
+          issueId: payload.issueId,
           ...redactedDetails,
           agentId: input.agentId ?? null,
           runId: input.runId ?? null,

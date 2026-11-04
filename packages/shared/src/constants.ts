@@ -1725,6 +1725,14 @@ export const PLUGIN_EVENT_TYPES = [
   "goal.updated",
   "approval.created",
   "approval.decided",
+  // Issue-thread interaction cards (ask_user_questions, request_confirmation,
+  // suggest_tasks, request_item_verdicts, ...). `issue.interaction.resolved`
+  // covers every terminal outcome (accepted, rejected, answered, cancelled,
+  // expired, withdrawn, dismissed, skipped) — a plugin that renders a card
+  // needs to know it's done, not which terminal state it ended in; that detail
+  // is already in the payload's `interactionStatus`.
+  "issue.interaction.created",
+  "issue.interaction.resolved",
   "budget.incident.opened",
   "budget.incident.resolved",
   "cost_event.created",

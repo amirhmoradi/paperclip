@@ -126,6 +126,7 @@ Subscribe in `setup` with `ctx.events.on(name, handler)` or `ctx.events.on(name,
 | `agent.run.started`, `agent.run.finished`, `agent.run.failed`, `agent.run.cancelled` | run |
 | `goal.created`, `goal.updated` | goal |
 | `approval.created`, `approval.decided` | approval |
+| `issue.interaction.created`, `issue.interaction.resolved` | issue |
 | `budget.incident.opened`, `budget.incident.resolved` | budget_incident |
 | `cost_event.created` | cost |
 | `activity.logged` | activity |

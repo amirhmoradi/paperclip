@@ -969,10 +969,22 @@ Minimum event set:
 - `agent.run.cancelled`
 - `approval.created`
 - `approval.decided`
+- `issue.interaction.created`
+- `issue.interaction.resolved`
 - `budget.incident.opened`
 - `budget.incident.resolved`
 - `cost_event.created`
 - `activity.logged`
+
+`issue.interaction.created` fires when an issue-thread interaction card
+(`ask_user_questions`, `request_confirmation`, `request_checkbox_confirmation`,
+`request_item_verdicts`, `suggest_tasks`) is created. `issue.interaction.resolved`
+fires on every terminal outcome — accepted, rejected, answered, cancelled,
+withdrawn, dismissed, skipped, or expired; the specific outcome is in the
+payload's `interactionStatus`, so a plugin that only needs to know the card is
+done can subscribe to this one event type rather than tracking every terminal
+action separately. Both events carry `issueId`, `interactionId` and
+`interactionKind` in the payload.
 
 Each event must include:
 
