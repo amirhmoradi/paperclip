@@ -6,6 +6,7 @@ import type { PluginEvent } from "@paperclipai/plugin-sdk";
 import {
   eventTypeForActivityAction,
   logActivity,
+  pluginEventTypeForActivity,
   publishActivity,
   setPluginEventBus,
   type ActivityPublication,
@@ -58,13 +59,18 @@ describe("issue-thread interaction plugin events (mapping)", () => {
     }
   });
 
-  it("leaves ambiguous, non-terminal interaction actions unmapped", () => {
-    // `_updated` is a tool-action execution-status tick, not the card's own
-    // resolution, and `_item_verdicts_submitted` also fires on partial
-    // submissions before the interaction is actually resolved. Mapping either
-    // to `issue.interaction.resolved` would tell a subscriber the card is
-    // settled while it may still be open.
+  it("leaves the non-terminal tool-action tick unmapped", () => {
+    // A tool-action execution-status tick, not the card's own resolution.
+    // Mapping it to `issue.interaction.resolved` would tell a subscriber the
+    // card is settled while it may still be open.
     expect(eventTypeForActivityAction("issue.thread_interaction_updated")).toBeNull();
+  });
+
+  it("leaves item-verdict submission unmapped in the static table (details-dependent)", () => {
+    // `_item_verdicts_submitted` fires on both partial and complete multi-item
+    // submissions; the static table can't see `details.interactionStatus` to
+    // tell them apart, so it stays unmapped here. `pluginEventTypeForActivity`
+    // (tested below) is what `persistActivity` actually uses.
     expect(eventTypeForActivityAction("issue.thread_interaction_item_verdicts_submitted")).toBeNull();
   });
 
@@ -76,6 +82,36 @@ describe("issue-thread interaction plugin events (mapping)", () => {
   it("still maps the legacy underscore actions it already covered", () => {
     expect(eventTypeForActivityAction("issue_comment_added")).toBe("issue.comment.created");
     expect(eventTypeForActivityAction("approval_approved")).toBe("approval.decided");
+  });
+});
+
+describe("pluginEventTypeForActivity (details-aware override)", () => {
+  it("maps a complete item-verdict submission onto issue.interaction.resolved", () => {
+    expect(
+      pluginEventTypeForActivity("issue.thread_interaction_item_verdicts_submitted", {
+        interactionStatus: "answered",
+      }),
+    ).toBe("issue.interaction.resolved");
+  });
+
+  it("leaves a partial item-verdict submission unmapped", () => {
+    expect(
+      pluginEventTypeForActivity("issue.thread_interaction_item_verdicts_submitted", {
+        interactionStatus: "pending",
+      }),
+    ).toBeNull();
+    expect(
+      pluginEventTypeForActivity("issue.thread_interaction_item_verdicts_submitted", null),
+    ).toBeNull();
+  });
+
+  it("falls through to the static table for every other action", () => {
+    expect(pluginEventTypeForActivity("issue.thread_interaction_created", null)).toBe(
+      "issue.interaction.created",
+    );
+    expect(pluginEventTypeForActivity("issue.thread_interaction_updated", {
+      interactionStatus: "answered",
+    })).toBeNull();
   });
 });
 
@@ -185,6 +221,61 @@ describeEmbeddedPostgres("issue-thread interaction plugin events (payload + bus 
       interactionId,
       interactionKind: "request_confirmation",
       interactionStatus: "accepted",
+    });
+  });
+
+  it("emits nothing for a partial multi-item verdict submission", async () => {
+    // `request_item_verdicts` cards submit verdicts incrementally. A partial
+    // submission logs the same action as a complete one, distinguished only
+    // by `details.interactionStatus` — reporting it as `resolved` would make
+    // a plugin think the card is done while items are still outstanding.
+    const companyId = await seedCompany();
+    const issueId = randomUUID();
+    const interactionId = randomUUID();
+    const events = captureEvents();
+
+    await logActivity(db, interactionInput({
+      companyId,
+      entityId: issueId,
+      action: "issue.thread_interaction_item_verdicts_submitted",
+      details: {
+        interactionId,
+        interactionKind: "request_item_verdicts",
+        interactionStatus: "pending",
+        newlyResolvedItemCount: 1,
+      },
+    }));
+
+    expect(events.find((event) => event.eventType === "issue.interaction.resolved")).toBeUndefined();
+    // The catch-all still fires — only the specific resolution event is withheld.
+    expect(events.find((event) => event.eventType === "activity.logged")).toBeDefined();
+  });
+
+  it("publishes issue.interaction.resolved for a complete multi-item verdict submission", async () => {
+    const companyId = await seedCompany();
+    const issueId = randomUUID();
+    const interactionId = randomUUID();
+    const events = captureEvents();
+
+    await logActivity(db, interactionInput({
+      companyId,
+      entityId: issueId,
+      action: "issue.thread_interaction_item_verdicts_submitted",
+      details: {
+        interactionId,
+        interactionKind: "request_item_verdicts",
+        interactionStatus: "answered",
+        newlyResolvedItemCount: 1,
+      },
+    }));
+
+    const resolved = events.find((event) => event.eventType === "issue.interaction.resolved");
+    expect(resolved).toBeDefined();
+    expect(resolved?.payload).toMatchObject({
+      issueId,
+      interactionId,
+      interactionKind: "request_item_verdicts",
+      interactionStatus: "answered",
     });
   });
 

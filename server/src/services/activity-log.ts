@@ -41,11 +41,16 @@ const ACTIVITY_ACTION_TO_PLUGIN_EVENT: Readonly<Record<string, PluginEventType>>
   issue_thread_interaction_skipped: "issue.interaction.resolved",
   issue_thread_interaction_resolved: "issue.interaction.resolved",
   // `issue_thread_interaction_updated` (a tool-action execution status tick,
-  // not the card's own resolution) and `issue_thread_interaction_item_verdicts_submitted`
-  // (fires on partial submissions too, before the interaction is actually
-  // resolved) are deliberately left unmapped: declaring either as
-  // `issue.interaction.resolved` would tell a subscriber the card is settled
-  // while it may still be open. See the PR description for a follow-up note.
+  // not the card's own resolution) is deliberately left unmapped here:
+  // declaring it as `issue.interaction.resolved` would tell a subscriber the
+  // card is settled while it may still be open.
+  //
+  // `issue_thread_interaction_item_verdicts_submitted` also fires on partial
+  // submissions, before the interaction is actually resolved — but unlike
+  // `_updated`, its `details.interactionStatus` ("answered" vs "pending")
+  // reliably distinguishes complete from partial. This static table can't see
+  // `details`, so that action is resolved in `persistActivity` below instead
+  // of here; see `pluginEventTypeForActivity`.
 };
 
 let _pluginEventBus: PluginEventBus | null = null;
@@ -68,6 +73,27 @@ export function setPluginEventBus(bus: PluginEventBus): void {
 export function eventTypeForActivityAction(action: string): PluginEventType | null {
   if (PLUGIN_EVENT_SET.has(action)) return action as PluginEventType;
   return ACTIVITY_ACTION_TO_PLUGIN_EVENT[action.replaceAll(".", "_")] ?? null;
+}
+
+/**
+ * Resolve the plugin event type for a logged activity, given its details.
+ *
+ * `issue.thread_interaction_item_verdicts_submitted` fires on both a partial
+ * multi-item verdict submission and the complete one that resolves the card
+ * (`server/src/routes/issues.ts`), with `details.interactionStatus` carrying
+ * which: `"answered"` once every item has a verdict, `"pending"` otherwise.
+ * The static action→event table (`eventTypeForActivityAction`) can't see
+ * `details`, so this override lives here, where they're available — a
+ * partial submission must not be reported as `issue.interaction.resolved`.
+ */
+export function pluginEventTypeForActivity(
+  action: string,
+  details: Record<string, unknown> | null,
+): PluginEventType | null {
+  if (action === "issue.thread_interaction_item_verdicts_submitted") {
+    return details?.interactionStatus === "answered" ? "issue.interaction.resolved" : null;
+  }
+  return eventTypeForActivityAction(action);
 }
 
 export function publishPluginDomainEvent(event: PluginEvent): void {
@@ -242,7 +268,7 @@ export async function persistActivity(db: Db, input: LogActivityInput) {
     responsibleUserId,
     details: redactedDetails,
   };
-  const pluginEventType = eventTypeForActivityAction(input.action);
+  const pluginEventType = pluginEventTypeForActivity(input.action, redactedDetails);
   const pluginEvent: PluginEvent | null = pluginEventType
     ? {
         eventId: randomUUID(),
